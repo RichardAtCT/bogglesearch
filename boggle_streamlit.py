@@ -67,45 +67,90 @@ with tab2:
 
             # Preprocess the image for better OCR accuracy
             gray = cv2.cvtColor(image_cv, cv2.COLOR_BGR2GRAY)
+            # Apply Gaussian Blur to reduce noise
+            blurred = cv2.GaussianBlur(gray, (5, 5), 0)
             # Apply adaptive thresholding to handle varying lighting conditions
-            thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                            cv2.THRESH_BINARY_INV, 11, 2)
 
             # Optional: Dilate to enhance letter contours
             kernel = np.ones((3, 3), np.uint8)
             dilated = cv2.dilate(thresh, kernel, iterations=1)
 
+            # Detect grid lines using Hough Transform (optional)
+            # Uncomment if grid detection is implemented
+            # edges = cv2.Canny(blurred, 50, 150, apertureSize=3)
+            # lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=100, minLineLength=100, maxLineGap=10)
+            # if lines is not None:
+            #     for line in lines:
+            #         x1, y1, x2, y2 = line[0]
+            #         cv2.line(image_cv, (x1, y1), (x2, y2), (255, 0, 0), 2)
+
             # Find contours corresponding to letters
             contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-            letter_boxes = []
+            # Initialize list to store detected letter bounding boxes
+            detected_letter_boxes = []
+
+            # Temporary list to hold all possible boxes before filtering
+            temp_letter_boxes = []
             for cnt in contours:
                 x, y, w, h = cv2.boundingRect(cnt)
-                # Filter out too small or too large contours
-                if 20 < w < 100 and 20 < h < 100:
-                    letter_boxes.append((x, y, w, h))
+                temp_letter_boxes.append((x, y, w, h))
 
-            if len(letter_boxes) != 16:
-                st.warning(
-                    f"Detected {len(letter_boxes)} letters. Please ensure the image is clear and the board is visible.")
+            # If no contours detected, notify user
+            if not temp_letter_boxes:
+                st.warning("No contours detected. Please ensure the board is clear and well-lit.")
             else:
-                # Sort the letter boxes: top to bottom, then left to right
-                letter_boxes = sorted(letter_boxes, key=lambda b: (b[1] // 10, b[0] // 10))
+                # Sort contours based on area (largest to smallest)
+                temp_letter_boxes = sorted(temp_letter_boxes, key=lambda b: b[2] * b[3], reverse=True)
+                # Select top 16 contours assuming they are letters
+                detected_letter_boxes = temp_letter_boxes[:16]
+
+                # Alternatively, use grid-based extraction as below
+
+                # Divide the image into a 4x4 grid
+                height, width = thresh.shape
+                cell_width = width // 4
+                cell_height = height // 4
 
                 extracted_letters = []
-                for idx, (x, y, w, h) in enumerate(letter_boxes):
-                    letter_img = thresh[y:y + h, x:x + w]
-                    # Resize to improve OCR accuracy
-                    letter_img = cv2.resize(letter_img, None, fx=2, fy=2, interpolation=cv2.INTER_LINEAR)
-                    # Invert colors back for OCR
-                    letter_img = cv2.bitwise_not(letter_img)
-                    # Use pytesseract to do OCR on the letter
-                    config = '--psm 10 --oem 3 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ'
-                    letter = pytesseract.image_to_string(letter_img, config=config)
-                    letter = letter.strip().upper()
-                    if len(letter) != 1 or not letter.isalpha():
+                for row in range(4):
+                    for col in range(4):
+                        x_start = col * cell_width
+                        y_start = row * cell_height
+                        x_end = (col + 1) * cell_width
+                        y_end = (row + 1) * cell_height
+                        cell_img = thresh[y_start:y_end, x_start:x_end]
+                        # Resize to improve OCR accuracy
+                        cell_img = cv2.resize(cell_img, None, fx=2, fy=2, interpolation=cv2.INTER_LINEAR)
+                        # Invert colors back for OCR
+                        cell_img = cv2.bitwise_not(cell_img)
+                        # Use pytesseract to do OCR on the cell
+                        config = '--psm 10 --oem 3 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+                        data = pytesseract.image_to_data(cell_img, config=config, output_type=pytesseract.Output.DICT)
                         letter = '?'
-                    extracted_letters.append(letter)
+                        conf = 0
+                        for i, word in enumerate(data['text']):
+                            if word.strip().isalpha() and len(word.strip()) == 1:
+                                letter = word.strip().upper()
+                                conf = int(data['conf'][i])
+                                break
+                        # Set a confidence threshold (e.g., 60)
+                        if conf < 60:
+                            letter = '?'
+                        extracted_letters.append(letter)
+
+                        # Draw bounding box and label for visualization
+                        cv2.rectangle(image_cv, (x_start, y_start), (x_end, y_end), (0, 255, 0), 2)
+                        cv2.putText(image_cv, letter, (x_start + 5, y_start + 30), cv2.FONT_HERSHEY_SIMPLEX, 1,
+                                    (0, 255, 0), 2)
+
+                # Convert back to PIL for display
+                image_with_boxes = cv2.cvtColor(image_cv, cv2.COLOR_BGR2RGB)
+                pil_image_with_boxes = Image.fromarray(image_with_boxes)
+                st.image(pil_image_with_boxes, caption='Detected Letters with Grid Bounding Boxes',
+                         use_column_width=True)
 
                 # Display the extracted letters
                 st.write("### Extracted Letters:")
@@ -117,14 +162,13 @@ with tab2:
 
                 # Check for any unidentified letters
                 if '?' in extracted_letters:
-                    st.error(
-                        "Some letters could not be recognized. Please ensure the image is clear and letters are distinct.")
-                    # Allow manual correction
-                    st.write("### Correct Unrecognized Letters:")
+                    st.error("Some letters could not be recognized. Please correct them below.")
+                    # Allow users to correct unrecognized letters
                     corrected_letters = []
                     for idx, letter in enumerate(extracted_letters):
                         if letter == '?':
-                            corrected = st.text_input(f"Letter {idx + 1}:", value="")
+                            corrected = st.text_input(f"Letter {idx + 1} (Row {idx // 4 + 1}, Column {idx % 4 + 1}):",
+                                                      value="")
                             corrected_letters.append(corrected.upper())
                         else:
                             corrected_letters.append(letter)
