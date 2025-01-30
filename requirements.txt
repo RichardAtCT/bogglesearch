@@ -1,0 +1,5 @@
+streamlit~=1.41.1
+pytesseract~=0.3.13
+opencv-python~=4.11.0.86
+numpy~=2.2.2
+pillow~=11.1.0
